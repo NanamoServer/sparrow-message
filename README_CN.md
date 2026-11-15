@@ -13,6 +13,7 @@ Sparrow Message 是专为 Minecraft 服务器集群设计的轻量消息库。�
 - 快速失败：发给不在线服务器的请求立即失败，对端处理逻辑出错时把错误带回给调用方。
 - 发给本服的消息直接在本地处理，不经过 Redis。
 - 处理逻辑默认直接运行在 Redis 的 I/O 线程上，按到达顺序处理，没有调度开销。需要阻塞的消息可以改用虚拟线程。
+- 可以把消息编码成频道名和字节，写进 Lua 脚本和别的 Redis 写入一起原子发布。
 - 序列化由你决定：每个消息直接读写 Netty 的 `ByteBuf`。
 - 多个 broker 可以共用一条 Redis 连接，插件的每个功能各用一个。
 - 除了 Lettuce 和平台自带的 Netty 之外没有其他依赖。
@@ -35,6 +36,7 @@ src/main/java/net/momirealms/sparrow/message
 +-- RedisMessage             所有消息的基础接口
 +-- MessageIdentifier        消息类型的名字
 +-- Target                   单向消息的发送目标
++-- PreparedMessage          编码好的单向消息, 供 Lua 脚本发布
 +-- Logger                   由你实现的日志出口
 +-- message                  OneWayMessage、TwoWayRequestMessage、TwoWayResponseMessage
 +-- codec                    MessageCodec 及其编码、解码两半
@@ -66,20 +68,6 @@ long    关联 ID         单向消息没有
 普通广播的消息头只占两个字节。tag 和来源的过滤在读完消息头后立即进行，不是接收方的服务器不会解码消息体。
 
 ## 快速开始
-
-### 引入依赖
-
-```kotlin
-repositories {
-    mavenCentral()
-    maven("https://repo.momirealms.net/releases/")
-}
-
-dependencies {
-    implementation("net.momirealms:sparrow-message:26.11")
-    implementation("io.lettuce:lettuce-core:7.7.0.RELEASE")
-}
-```
 
 库把 Lettuce 声明为 `compileOnly`，需要你自己提供。Netty 来自你的平台（Paper、Velocity、BungeeCord 都自带），或者由 Lettuce 传递引入。把库打进插件时请重定位 `net.momirealms.sparrow.message`。
 
@@ -327,6 +315,27 @@ public boolean shortCircuitLocally() {
 }
 ```
 
+### 在 Lua 脚本里发布
+
+想让一次 Redis 写入和一条消息的发布原子完成时，用 `prepare` 拿到频道名和编码好的字节，交给你自己的脚本去 `PUBLISH`：
+
+```java
+private static final String UPDATE = "redis.call('HSET', KEYS[1], ARGV[1], ARGV[2]); return redis.call('PUBLISH', ARGV[3], ARGV[4])";
+
+PreparedMessage prepared = broker.prepare(new PlayerChangedMessage(uuid), Target.all());
+commands.eval(
+        UPDATE,
+        ScriptOutputType.INTEGER,
+        new byte[][]{KEY},
+        field,
+        value,
+        prepared.channel().getBytes(StandardCharsets.UTF_8),
+        prepared.payload()
+);
+```
+
+脚本由你自己的 Redis 连接执行，库不参与。`prepare` 支持所有 `Target`，只用于单向消息。它不做本地短路，目标是本服时消息同样经过 Redis。
+
 ## 注意事项
 
 - **注册顺序就是线上格式。** 类型 ID 按注册顺序分配。`appId` 相同的所有 broker 必须在订阅之前，以相同的顺序注册同一组消息。在中间插入一种消息需要所有服务器一起更新。
@@ -335,3 +344,18 @@ public boolean shortCircuitLocally() {
 - **`publishOthers` 返回的数量包含本服的订阅。** Redis 仍会把消息投给发送方自己，发送方收到后丢弃。
 - **处理逻辑的失败会报告给你的 `Logger`。** `handle()` 抛出的异常、解码失败的数据、失败的 `handleRequest()` 都通过 `Logger.error` 报告。
 - **类型 ID 未知的消息会被静默丢弃。**
+
+
+## 引入依赖
+
+```kotlin
+repositories {
+    mavenCentral()
+    maven("https://repo.momirealms.net/releases/")
+}
+
+dependencies {
+    implementation("net.momirealms:sparrow-message:26.11.1")
+    implementation("io.lettuce:lettuce-core:7.7.0.RELEASE")
+}
+```

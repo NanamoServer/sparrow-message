@@ -87,6 +87,19 @@ public interface MessageBroker {
     }
 
     /**
+     * 把一条单向消息编码成频道名和字节, 交给调用方自己发布.
+     * <p>用于把发布写进 Lua 脚本或事务, 让它和别的 Redis 写入一起原子完成,
+     * 脚本里执行 {@code redis.call('PUBLISH', channel, payload)} 即可.
+     * 这里不做本地短路, 目标是本服时消息同样经过 Redis.
+     *
+     * @param message 要发送的消息, <strong>必须已经注册</strong>
+     * @param target 发送目标
+     * @return 要发布到的频道和完整的消息字节
+     */
+    @NotNull
+    PreparedMessage prepare(@NotNull OneWayMessage message, @NotNull Target target);
+
+    /**
      * 向指定服务器发送一个请求并等待响应, 超时时间用创建 broker 时设置的默认值.
      *
      * @param request 要发送的请求

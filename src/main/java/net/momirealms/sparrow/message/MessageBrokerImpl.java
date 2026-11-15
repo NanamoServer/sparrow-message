@@ -111,6 +111,18 @@ final class MessageBrokerImpl implements MessageBroker {
     @NotNull
     @Override
     public CompletableFuture<Long> publish(@NotNull OneWayMessage message, @NotNull Target target) {
+        // 发给本服的消息不经过 Redis, 直接交给它的执行器
+        if (target.kind() == Target.Kind.SERVER && target.value().equals(this.serverId) && message.shortCircuitLocally()) {
+            message.executor().execute(() -> this.handle(message));
+            return CompletableFuture.completedFuture(1L);
+        }
+        PreparedMessage prepared = this.prepare(message, target);
+        return this.connection.publish(prepared.channel(), prepared.payload());
+    }
+
+    @NotNull
+    @Override
+    public PreparedMessage prepare(@NotNull OneWayMessage message, @NotNull Target target) {
         String channel = this.broadcastChannel;
         String tag = null;
         String excludedSource = null;
@@ -118,17 +130,9 @@ final class MessageBrokerImpl implements MessageBroker {
             case ALL -> {}
             case OTHERS -> excludedSource = this.serverId;
             case TAG -> tag = target.value();
-            case SERVER -> {
-                // 发给本服的消息不经过 Redis, 直接交给它的执行器
-                if (target.value().equals(this.serverId) && message.shortCircuitLocally()) {
-                    message.executor().execute(() -> this.handle(message));
-                    return CompletableFuture.completedFuture(1L);
-                }
-                channel = this.serverChannel(target.value());
-            }
+            case SERVER -> channel = this.serverChannel(target.value());
         }
-        byte[] payload = this.encode(message, MessageHeader.ONE_WAY, tag, excludedSource, 0L);
-        return this.connection.publish(channel, payload);
+        return new PreparedMessage(channel, this.encode(message, MessageHeader.ONE_WAY, tag, excludedSource, 0L));
     }
 
     @NotNull

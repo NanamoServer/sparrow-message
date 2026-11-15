@@ -13,6 +13,7 @@ It requires Java 21. Redis 6+ or Valkey works as the backend.
 - Fast failure: a request to an offline server fails immediately, and a failure in the remote handler is reported back to the caller.
 - Messages addressed to the local server are handled in place, without touching Redis.
 - Handlers run on the Redis I/O thread by default, in arrival order and with no scheduling overhead. A message that needs to block opts into virtual threads.
+- A message can be encoded into a channel name and bytes, to be published from a Lua script atomically with other Redis writes.
 - Serialization is yours: each message reads and writes a Netty `ByteBuf` directly.
 - Several brokers can share one Redis connection, one per feature of your plugin.
 - No dependencies beyond Lettuce and the Netty that ships with your platform.
@@ -35,6 +36,7 @@ src/main/java/net/momirealms/sparrow/message
 +-- RedisMessage             Base interface of every message
 +-- MessageIdentifier        Name of a message type
 +-- Target                   Where a one-way message goes
++-- PreparedMessage          An encoded one-way message, for publishing from a Lua script
 +-- Logger                   Log sink you implement
 +-- message                  OneWayMessage, TwoWayRequestMessage, TwoWayResponseMessage
 +-- codec                    MessageCodec and its encoder / decoder halves
@@ -66,20 +68,6 @@ long    correlation id   absent on one-way messages
 A plain broadcast costs two bytes of header. Tag and source filtering happen right after the header is read, so a server that is not a recipient never decodes the body.
 
 ## Getting started
-
-### Dependency
-
-```kotlin
-repositories {
-    mavenCentral()
-    maven("https://repo.momirealms.net/releases/")
-}
-
-dependencies {
-    implementation("net.momirealms:sparrow-message:26.11")
-    implementation("io.lettuce:lettuce-core:7.7.0.RELEASE")
-}
-```
 
 The library declares Lettuce as `compileOnly`, so you provide it yourself. Netty comes from your platform (Paper, Velocity and BungeeCord all ship it) or transitively from Lettuce. Relocate `net.momirealms.sparrow.message` when you shade it into a plugin.
 
@@ -327,6 +315,27 @@ public boolean shortCircuitLocally() {
 }
 ```
 
+### Publishing from a Lua script
+
+When a Redis write and a message must happen atomically, `prepare` gives you the channel name and the encoded bytes, and your own script does the `PUBLISH`:
+
+```java
+private static final String UPDATE = "redis.call('HSET', KEYS[1], ARGV[1], ARGV[2]); return redis.call('PUBLISH', ARGV[3], ARGV[4])";
+
+PreparedMessage prepared = broker.prepare(new PlayerChangedMessage(uuid), Target.all());
+commands.eval(
+        UPDATE,
+        ScriptOutputType.INTEGER,
+        new byte[][]{KEY},
+        field,
+        value,
+        prepared.channel().getBytes(StandardCharsets.UTF_8),
+        prepared.payload()
+);
+```
+
+The script runs on your own Redis connection; the library is not involved. `prepare` accepts every `Target` and works for one-way messages only. It never short-circuits locally, so a message addressed to the local server still travels through Redis.
+
 ## Things to know
 
 - **Registration order is the wire format.** Type ids are assigned in registration order. Every broker with the same `appId` must register the same messages in the same order, before subscribing. Adding a message in the middle requires updating all servers together.
@@ -335,3 +344,18 @@ public boolean shortCircuitLocally() {
 - **`publishOthers` counts the local subscription too.** Redis still delivers the message to the sending server, which then discards it.
 - **Handler failures go to your `Logger`.** An exception thrown by `handle()`, a payload that fails to decode, and a failed `handleRequest()` are all reported through `Logger.error`.
 - **Messages with an unknown type id are dropped silently.**
+
+
+## Dependency
+
+```kotlin
+repositories {
+    mavenCentral()
+    maven("https://repo.momirealms.net/releases/")
+}
+
+dependencies {
+    implementation("net.momirealms:sparrow-message:26.11.1")
+    implementation("io.lettuce:lettuce-core:7.7.0.RELEASE")
+}
+```
