@@ -12,7 +12,7 @@ It requires Java 21. Redis 6+ or Valkey works as the backend.
 - Request/response between two servers, returned as a `CompletableFuture`, with a default timeout and a per-call override.
 - Fast failure: a request to an offline server fails immediately, and a failure in the remote handler is reported back to the caller.
 - Messages addressed to the local server are handled in place, without touching Redis.
-- Handlers run on virtual threads by default. Messages that must be handled in order share a serial executor.
+- Handlers run on the Redis I/O thread by default, in arrival order and with no scheduling overhead. A message that needs to block opts into virtual threads.
 - Serialization is yours: each message reads and writes a Netty `ByteBuf` directly.
 - Several brokers can share one Redis connection, one per feature of your plugin.
 - No dependencies beyond Lettuce and the Netty that ships with your platform.
@@ -40,7 +40,7 @@ src/main/java/net/momirealms/sparrow/message
 +-- codec                    MessageCodec and its encoder / decoder halves
 +-- registry                 Message registration and wire id assignment
 +-- connection               RedisConnection and the Lettuce implementation
-+-- executors                Virtual-thread executor and serial executors
++-- executors                Direct, virtual-thread and serial executors
 +-- exception                NoSubscriberException, RemoteMessageException
 +-- util                     ByteBufHelper
 ```
@@ -283,9 +283,22 @@ A `handleRequest()` future that completes with `null` sends no response, and the
 
 ### Threads and ordering
 
-- Handlers run on the executor returned by the message's `executor()`. The default is `MessageExecutors.VIRTUAL`, one virtual thread per message, so a handler may block.
-- Futures returned by the broker complete on a virtual thread as well, never on the Redis I/O thread. Callbacks attached to them may block.
-- Messages that must be handled in arrival order return the same serial executor:
+Handlers run on the executor returned by the message's `executor()`.
+
+| Executor | Runs the handler on | Use it when |
+|---|---|---|
+| `MessageExecutors.SYNC` (default) | The Redis I/O thread, one message after another in arrival order | The handler is quick and never blocks, which covers most messages |
+| `MessageExecutors.VIRTUAL` | A fresh virtual thread per message, with no ordering | The handler blocks: a database query, a synchronous Redis call, waiting on a future |
+| `MessageExecutors.newSerialExecutor()` | Virtual threads, one task at a time in submission order | The handler blocks and order still matters |
+
+**A handler on the default executor must not block and must not call Redis synchronously.** Every broker sharing the connection receives its messages on that one thread, so a handler that blocks holds up all of them. Keep message bodies small for the same reason: decoding happens on that thread too.
+
+Futures follow the same split:
+
+- A one-way publish future completes on the Redis I/O thread. Callbacks attached to it must not block; use `thenAcceptAsync` and friends when they need to.
+- A request future completes on a virtual thread, so code that runs once the response arrives may block.
+
+To handle a blocking message in arrival order, return the same serial executor from every message in the group:
 
 ```java
 private static final Executor ORDERED = MessageExecutors.newSerialExecutor();
@@ -301,7 +314,7 @@ A serial executor runs one task at a time, in submission order. Ordering covers 
 
 ### Local delivery
 
-A message or request addressed to the local `serverId` skips Redis and serialization entirely: the handler receives the very object you passed in, on the message's executor. Timeouts and failure rules stay the same.
+A message or request addressed to the local `serverId` skips Redis and serialization entirely: the handler receives the very object you passed in, on the message's executor. With the default executor that means the handler runs on the thread that called `publish` or `publishTwoWay`, before the call returns. Timeouts and failure rules stay the same.
 
 Broadcasts and tag targets that include the local server still travel through Redis, so every server observes them in the same order.
 

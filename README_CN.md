@@ -12,7 +12,7 @@ Sparrow Message 是专为 Minecraft 服务器集群设计的轻量消息库。�
 - 两台服务器之间的请求响应，以 `CompletableFuture` 返回，有默认超时，单次调用可以另行指定。
 - 快速失败：发给不在线服务器的请求立即失败，对端处理逻辑出错时把错误带回给调用方。
 - 发给本服的消息直接在本地处理，不经过 Redis。
-- 处理逻辑默认运行在虚拟线程上。需要按顺序处理的消息共用一个串行执行器。
+- 处理逻辑默认直接运行在 Redis 的 I/O 线程上，按到达顺序处理，没有调度开销。需要阻塞的消息可以改用虚拟线程。
 - 序列化由你决定：每个消息直接读写 Netty 的 `ByteBuf`。
 - 多个 broker 可以共用一条 Redis 连接，插件的每个功能各用一个。
 - 除了 Lettuce 和平台自带的 Netty 之外没有其他依赖。
@@ -40,7 +40,7 @@ src/main/java/net/momirealms/sparrow/message
 +-- codec                    MessageCodec 及其编码、解码两半
 +-- registry                 消息注册与线上类型 ID 分配
 +-- connection               RedisConnection 与 Lettuce 实现
-+-- executors                虚拟线程执行器与串行执行器
++-- executors                直接执行、虚拟线程与串行执行器
 +-- exception                NoSubscriberException、RemoteMessageException
 +-- util                     ByteBufHelper
 ```
@@ -283,9 +283,22 @@ broker.publishTwoWay(new PlayerCountRequest("world"), "survival-2", Duration.ofS
 
 ### 线程与顺序
 
-- 处理逻辑运行在消息的 `executor()` 返回的执行器上。默认是 `MessageExecutors.VIRTUAL`，每条消息一条虚拟线程，所以处理逻辑可以阻塞。
-- broker 返回的 Future 同样在虚拟线程上完成，不会在 Redis 的 I/O 线程上完成。挂在它上面的回调可以阻塞。
-- 需要按到达顺序处理的消息返回同一个串行执行器：
+处理逻辑运行在消息的 `executor()` 返回的执行器上。
+
+| 执行器 | 处理逻辑运行在 | 适用情况 |
+|---|---|---|
+| `MessageExecutors.SYNC`（默认） | Redis 的 I/O 线程，按到达顺序一条接一条 | 处理逻辑很快且从不阻塞，大多数消息属于这种 |
+| `MessageExecutors.VIRTUAL` | 每条消息一条新的虚拟线程，不保证顺序 | 处理逻辑会阻塞：查数据库、同步调用 Redis、等待某个 Future |
+| `MessageExecutors.newSerialExecutor()` | 虚拟线程，按提交顺序一次一个 | 处理逻辑会阻塞，同时还要保序 |
+
+**默认执行器上的处理逻辑不能阻塞，也不能同步调用 Redis。** 共用这条连接的所有 broker 都在这一条线程上接收消息，一个处理逻辑阻塞会拖住全部消息。出于同样的原因，消息体不宜过大，解码也在这条线程上完成。
+
+Future 的完成线程也分两种：
+
+- 单向发布的 Future 在 Redis 的 I/O 线程上完成。挂在它上面的回调不能阻塞，需要阻塞时用 `thenAcceptAsync` 这类带执行器的方法。
+- 请求的 Future 在虚拟线程上完成，拿到响应之后的代码可以阻塞。
+
+会阻塞的消息要按到达顺序处理时，让这一组消息都返回同一个串行执行器：
 
 ```java
 private static final Executor ORDERED = MessageExecutors.newSerialExecutor();
@@ -301,7 +314,7 @@ public Executor executor() {
 
 ### 本地投递
 
-发给本服 `serverId` 的消息和请求完全跳过 Redis 和序列化：处理逻辑拿到的就是你传入的那个对象，运行在消息的执行器上。超时和失败规则不变。
+发给本服 `serverId` 的消息和请求完全跳过 Redis 和序列化：处理逻辑拿到的就是你传入的那个对象，运行在消息的执行器上。使用默认执行器时，处理逻辑就在调用 `publish` 或 `publishTwoWay` 的那条线程上运行，方法返回之前已经执行完。超时和失败规则不变。
 
 包含本服的广播和 tag 目标仍然经过 Redis，这样每台服务器看到它们的顺序是一致的。
 

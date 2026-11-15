@@ -42,6 +42,8 @@ public interface MessageBroker {
      * <p>返回的 Future 在 Redis 确认发布后完成, 不等待对端处理. 接收数量为 0 也算成功.
      * 目标是本服且消息允许本地短路时, 消息直接交给本地处理, Future 立即以 1 完成.
      * 发布失败时 Future 以异常完成. Redis 断线期间的发布由客户端排队, 重连后发出.
+     * <p><strong>Future 在 Redis 客户端的 I/O 线程上完成, 挂在它上面的回调不能阻塞</strong>,
+     * 需要阻塞时用 {@code thenAcceptAsync} 这类带执行器的方法.
      *
      * @param message 要发送的消息, <strong>必须已经注册</strong>
      * @param target 发送目标

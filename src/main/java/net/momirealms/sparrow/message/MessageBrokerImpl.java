@@ -128,15 +128,7 @@ final class MessageBrokerImpl implements MessageBroker {
             }
         }
         byte[] payload = this.encode(message, MessageHeader.ONE_WAY, tag, excludedSource, 0L);
-        CompletableFuture<Long> result = new CompletableFuture<>();
-        this.connection.publish(channel, payload).whenComplete((receivers, error) -> {
-            if (error != null) {
-                this.fail(result, error);
-            } else {
-                this.complete(result, receivers);
-            }
-        });
-        return result;
+        return this.connection.publish(channel, payload);
     }
 
     @NotNull
@@ -308,7 +300,7 @@ final class MessageBrokerImpl implements MessageBroker {
         }
     }
 
-    // 对外的 Future 统一换到虚拟线程上完成. 结果常常在 I/O 线程上到达, 调用方挂在 Future 上的回调可以放心阻塞.
+    // 请求的 Future 换到虚拟线程上完成. 结果常常在 I/O 线程上到达, 调用方拿到响应后的回调可以放心阻塞.
     private <T> void complete(CompletableFuture<T> future, T value) {
         MessageExecutors.VIRTUAL.execute(() -> future.complete(value));
     }

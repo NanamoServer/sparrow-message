@@ -7,6 +7,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 
 public final class MessageExecutors {
+    public static final Executor SYNC = Runnable::run;
     public static final Executor VIRTUAL = Executors.newThreadPerTaskExecutor(Thread.ofVirtual().name("sparrow-message-virtual-", 0).factory());
 
     private MessageExecutors() {}

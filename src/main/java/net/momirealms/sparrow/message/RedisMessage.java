@@ -20,18 +20,21 @@ public interface RedisMessage {
     }
 
     /**
-     * 这条消息的处理逻辑在哪个执行器上运行, 默认是共享的虚拟线程执行器.
-     * <p>需要按接收顺序处理的一组消息返回同一个串行执行器, 见 {@link MessageExecutors#newSerialExecutor()}.
+     * 这条消息的处理逻辑在哪个执行器上运行, 默认是 {@link MessageExecutors#SYNC}.
+     * <p>默认情况下处理逻辑直接跑在 Redis 客户端的 I/O 线程上, 消息按到达顺序依次处理.
+     * <strong>在这条线程上不能阻塞, 也不能同步调用 Redis.</strong>
+     * 需要阻塞的消息返回 {@link MessageExecutors#VIRTUAL}, 既要阻塞又要保序的返回同一个 {@link MessageExecutors#newSerialExecutor()}.
      *
      * @return 运行处理逻辑的执行器
      */
     @NotNull
     default Executor executor() {
-        return MessageExecutors.VIRTUAL;
+        return MessageExecutors.SYNC;
     }
 
     /**
      * 定向发给本服时是否直接在本地处理. 本地处理不经过 Redis 也不编解码, 处理逻辑拿到的就是发送时的那个消息对象.
+     * 执行器是 {@link MessageExecutors#SYNC} 时, 处理逻辑就在调用发布方法的那条线程上运行.
      * <p>返回 {@code false} 时消息照常发到本服的频道.
      *
      * @return 是否在本地直接处理
