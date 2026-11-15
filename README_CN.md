@@ -58,14 +58,14 @@ src/main/java/net/momirealms/sparrow/message
 
 ```text
 byte    标记位          bit 0-1: 种类 (单向, 请求, 响应, 错误), bit 2: 带 tag, bit 3: 排除来源
-varint  类型 ID         按注册顺序分配; 错误响应没有
+int     类型 ID         默认是消息标识的 hash, 定长 4 字节; 错误响应没有
 utf8    tag             bit 2 置位时才有
 utf8    来源服务器       bit 3 置位或种类为请求时才有
 long    关联 ID         单向消息没有
 ...     消息体
 ```
 
-普通广播的消息头只占两个字节。tag 和来源的过滤在读完消息头后立即进行，不是接收方的服务器不会解码消息体。
+普通广播的消息头占 5 个字节。类型 ID 的分配方式可以在创建 broker 时改成按注册顺序，那样类型 ID 是 varint，普通广播的消息头只占 2 个字节，见[注意事项](#注意事项)。tag 和来源的过滤在读完消息头后立即进行，不是接收方的服务器不会解码消息体。
 
 ## 快速开始
 
@@ -84,6 +84,7 @@ MessageBroker broker = MessageBroker.builder()
         .connection(connection)
         .logger(myLogger)
         .requestTimeout(Duration.ofSeconds(10))   // 可选, 默认 10 秒
+        .typeIdStrategy(TypeIdStrategy.IDENTIFIER_HASH)   // 可选, 默认 IDENTIFIER_HASH
         .build();
 ```
 
@@ -338,7 +339,9 @@ commands.eval(
 
 ## 注意事项
 
-- **注册顺序就是线上格式。** 类型 ID 按注册顺序分配。`appId` 相同的所有 broker 必须在订阅之前，以相同的顺序注册同一组消息。在中间插入一种消息需要所有服务器一起更新。
+- **类型 ID 默认由消息标识算出。** `TypeIdStrategy.IDENTIFIER_HASH` 下，类型 ID 是 `namespace:value` 的 FNV-1a 32 位值，和注册顺序无关，各服务器注册的消息也可以不完全相同。两个标识算出同一个值时，注册会抛出 `IllegalStateException`，给其中一种消息换个标识即可。修改一种消息的字段仍然需要所有服务器一起更新，或者给新格式换一个标识。
+- **`TypeIdStrategy.REGISTRATION_ORDER` 下注册顺序就是线上格式。** 类型 ID 是注册的先后序号，每条消息能省 3 个字节。`appId` 相同的所有 broker 必须在订阅之前，以相同的顺序注册同一组消息，在中间插入一种消息需要所有服务器一起更新。库不检查各端的顺序是否一致。
+- **`appId` 相同的所有 broker 必须使用同一种 `TypeIdStrategy`。** 两种方式的消息头互不兼容，库不检查各端是否一致，配错时消息会被丢弃或解码失败。
 - **消息必须先注册再发送**，请求的响应类型同样要注册。
 - **消息最多送达一次。** Redis Pub/Sub 不保存消息。服务器不在线或断线期间发布的消息，它收不到。
 - **`publishOthers` 返回的数量包含本服的订阅。** Redis 仍会把消息投给发送方自己，发送方收到后丢弃。

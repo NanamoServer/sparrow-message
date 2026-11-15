@@ -58,14 +58,14 @@ Every payload starts with a small header written by the library, followed by the
 
 ```text
 byte    flags            bits 0-1: kind (one-way, request, response, error), bit 2: has tag, bit 3: exclude source
-varint  type id          assigned by registration order; absent on error responses
+int     type id          hash of the message identifier by default, fixed 4 bytes; absent on error responses
 utf8    tag              only when bit 2 is set
 utf8    source server    only when bit 3 is set or the kind is request
 long    correlation id   absent on one-way messages
 ...     body
 ```
 
-A plain broadcast costs two bytes of header. Tag and source filtering happen right after the header is read, so a server that is not a recipient never decodes the body.
+A plain broadcast costs five bytes of header. The broker can be built to assign type ids by registration order instead, which makes the type id a varint and brings a plain broadcast down to two bytes, see [Things to know](#things-to-know). Tag and source filtering happen right after the header is read, so a server that is not a recipient never decodes the body.
 
 ## Getting started
 
@@ -84,6 +84,7 @@ MessageBroker broker = MessageBroker.builder()
         .connection(connection)
         .logger(myLogger)
         .requestTimeout(Duration.ofSeconds(10))   // optional, 10 seconds by default
+        .typeIdStrategy(TypeIdStrategy.IDENTIFIER_HASH)   // optional, IDENTIFIER_HASH by default
         .build();
 ```
 
@@ -338,7 +339,9 @@ The script runs on your own Redis connection; the library is not involved. `prep
 
 ## Things to know
 
-- **Registration order is the wire format.** Type ids are assigned in registration order. Every broker with the same `appId` must register the same messages in the same order, before subscribing. Adding a message in the middle requires updating all servers together.
+- **Type ids come from the message identifier by default.** With `TypeIdStrategy.IDENTIFIER_HASH` the type id is the 32-bit FNV-1a hash of `namespace:value`. It does not depend on registration order, and servers may register different sets of messages. When two identifiers hash to the same value, registration throws `IllegalStateException`; rename one of them. Changing the fields of a message still requires updating all servers together, or giving the new format a new identifier.
+- **With `TypeIdStrategy.REGISTRATION_ORDER`, registration order is the wire format.** The type id is the position in registration order, which saves 3 bytes per message. Every broker with the same `appId` must register the same messages in the same order, before subscribing, and adding a message in the middle requires updating all servers together. The library does not check that the order matches.
+- **Every broker with the same `appId` must use the same `TypeIdStrategy`.** The two header formats are incompatible and the library does not check that servers agree; a mismatch shows up as dropped messages or decode failures.
 - **A message must be registered before it is published**, and so must the response type of a request.
 - **Delivery is at most once.** Redis Pub/Sub does not store messages. A server that is offline or disconnected misses whatever is published meanwhile.
 - **`publishOthers` counts the local subscription too.** Redis still delivers the message to the sending server, which then discards it.

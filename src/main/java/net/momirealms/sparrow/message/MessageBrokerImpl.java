@@ -10,9 +10,11 @@ import net.momirealms.sparrow.message.executors.MessageExecutors;
 import net.momirealms.sparrow.message.message.OneWayMessage;
 import net.momirealms.sparrow.message.message.TwoWayRequestMessage;
 import net.momirealms.sparrow.message.message.TwoWayResponseMessage;
-import net.momirealms.sparrow.message.registry.DefaultMessageRegistry;
+import net.momirealms.sparrow.message.registry.HashedMessageRegistry;
+import net.momirealms.sparrow.message.registry.OrderedMessageRegistry;
 import net.momirealms.sparrow.message.registry.RedisMessageRegistry;
 import net.momirealms.sparrow.message.registry.RegisteredRedisMessage;
+import net.momirealms.sparrow.message.registry.TypeIdStrategy;
 import net.momirealms.sparrow.message.util.ByteBufHelper;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -47,7 +49,7 @@ final class MessageBrokerImpl implements MessageBroker {
     private final RedisConnection connection;
     private final Logger logger;
     private final Duration requestTimeout;
-    private final RedisMessageRegistry registry = new DefaultMessageRegistry();
+    private final RedisMessageRegistry registry;
     private final String broadcastChannel; // 广播与 tag 消息走这个频道
     private final String serverChannel;    // 定向发给本服的消息, 请求和响应走这个频道
 
@@ -56,13 +58,14 @@ final class MessageBrokerImpl implements MessageBroker {
     // 关联 ID 从随机位置起步. 两个进程短暂共用同一个 serverId 时会收到彼此的响应, 随机起点让它们的关联 ID 对不上号
     private final AtomicLong nextCorrelationId = new AtomicLong(ThreadLocalRandom.current().nextLong());
 
-    MessageBrokerImpl(String appId, String serverId, Set<String> tags, RedisConnection connection, Logger logger, Duration requestTimeout) {
+    MessageBrokerImpl(String appId, String serverId, Set<String> tags, RedisConnection connection, Logger logger, Duration requestTimeout, TypeIdStrategy typeIdStrategy) {
         this.appId = appId;
         this.serverId = serverId;
         this.tags = tags;
         this.connection = connection;
         this.logger = logger;
         this.requestTimeout = requestTimeout;
+        this.registry = typeIdStrategy == TypeIdStrategy.IDENTIFIER_HASH ? new HashedMessageRegistry() : new OrderedMessageRegistry();
         this.broadcastChannel = appId + ":all";
         this.serverChannel = this.serverChannel(serverId);
     }
@@ -192,9 +195,9 @@ final class MessageBrokerImpl implements MessageBroker {
         // 用不走内存池的堆缓冲区, 发布常常发生在一次性的虚拟线程上
         ByteBuf buffer = Unpooled.buffer(HEADER_ESTIMATE + message.estimateSize());
         switch (kind) {
-            case MessageHeader.ONE_WAY -> MessageHeader.writeOneWay(buffer, registered.id(), tag, source);
-            case MessageHeader.REQUEST -> MessageHeader.writeRequest(buffer, registered.id(), source, correlationId);
-            case MessageHeader.RESPONSE -> MessageHeader.writeResponse(buffer, registered.id(), correlationId);
+            case MessageHeader.ONE_WAY -> MessageHeader.writeOneWay(buffer, this.registry, registered.id(), tag, source);
+            case MessageHeader.REQUEST -> MessageHeader.writeRequest(buffer, this.registry, registered.id(), source, correlationId);
+            case MessageHeader.RESPONSE -> MessageHeader.writeResponse(buffer, this.registry, registered.id(), correlationId);
         }
         registered.codec().encode(message, buffer);
         return ByteBufUtil.getBytes(buffer, 0, buffer.writerIndex(), false);
@@ -215,7 +218,7 @@ final class MessageBrokerImpl implements MessageBroker {
     private void receive(byte[] payload) {
         try {
             ByteBuf buffer = Unpooled.wrappedBuffer(payload);
-            MessageHeader header = MessageHeader.read(buffer);
+            MessageHeader header = MessageHeader.read(buffer, this.registry);
             switch (header.kind()) {
                 case MessageHeader.ONE_WAY -> this.receiveOneWay(header, buffer);
                 case MessageHeader.REQUEST -> this.receiveRequest(header, buffer);
@@ -231,7 +234,7 @@ final class MessageBrokerImpl implements MessageBroker {
         // 不是发给本服的消息到此为止, 不解码消息体
         if (header.tag() != null && !this.tags.contains(header.tag())) return;
         if (this.serverId.equals(header.source())) return;
-        // 对端注册的消息比本端多时会查不到
+        // 对端注册了本端没有的消息时会查不到
         RegisteredRedisMessage<RedisMessage> registered = this.registry.byId(header.typeId());
         if (registered == null) return;
         OneWayMessage message = (OneWayMessage) registered.codec().decode(buffer);

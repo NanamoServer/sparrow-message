@@ -1,8 +1,10 @@
 package net.momirealms.sparrow.message.registry;
 
+import io.netty.buffer.ByteBuf;
 import net.momirealms.sparrow.message.MessageIdentifier;
 import net.momirealms.sparrow.message.RedisMessage;
 import net.momirealms.sparrow.message.codec.MessageCodec;
+import net.momirealms.sparrow.message.util.ByteBufHelper;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -11,7 +13,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-public final class DefaultMessageRegistry implements RedisMessageRegistry {
+public final class OrderedMessageRegistry implements RedisMessageRegistry {
     private final List<RegisteredRedisMessage<RedisMessage>> byId = new ArrayList<>();                  // 下标就是类型 ID
     private final Map<MessageIdentifier, RegisteredRedisMessage<RedisMessage>> byKey = new HashMap<>();
 
@@ -43,5 +45,15 @@ public final class DefaultMessageRegistry implements RedisMessageRegistry {
     @Override
     public boolean contains(@NotNull MessageIdentifier id) {
         return this.byKey.containsKey(id);
+    }
+
+    @Override
+    public void writeTypeId(@NotNull ByteBuf buffer, int id) {
+        ByteBufHelper.writeCompactInt(buffer, id);
+    }
+
+    @Override
+    public int readTypeId(@NotNull ByteBuf buffer) {
+        return ByteBufHelper.readCompactInt(buffer);
     }
 }

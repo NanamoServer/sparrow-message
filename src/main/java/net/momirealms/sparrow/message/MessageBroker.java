@@ -5,6 +5,7 @@ import net.momirealms.sparrow.message.message.OneWayMessage;
 import net.momirealms.sparrow.message.message.TwoWayRequestMessage;
 import net.momirealms.sparrow.message.message.TwoWayResponseMessage;
 import net.momirealms.sparrow.message.registry.RedisMessageRegistry;
+import net.momirealms.sparrow.message.registry.TypeIdStrategy;
 import org.jetbrains.annotations.NotNull;
 
 import java.time.Duration;
@@ -143,6 +144,7 @@ public interface MessageBroker {
         private RedisConnection connection;
         private Logger logger;
         private Duration requestTimeout = Duration.ofSeconds(10);
+        private TypeIdStrategy typeIdStrategy = TypeIdStrategy.IDENTIFIER_HASH;
 
         private Builder() {}
 
@@ -209,6 +211,19 @@ public interface MessageBroker {
             return this;
         }
 
+        /**
+         * 设置消息头里类型 ID 的分配方式, 不设置时为 {@link TypeIdStrategy#IDENTIFIER_HASH}.
+         * <strong>appId 相同的所有 broker 必须设置成同一种</strong>, 两种方式的消息头互不兼容, 库不检查各端是否一致.
+         *
+         * @param typeIdStrategy 类型 ID 的分配方式
+         * @return 此构建器
+         */
+        @NotNull
+        public Builder typeIdStrategy(@NotNull TypeIdStrategy typeIdStrategy) {
+            this.typeIdStrategy = typeIdStrategy;
+            return this;
+        }
+
         @NotNull
         public MessageBroker build() {
             Objects.requireNonNull(this.appId, "appId");
@@ -217,7 +232,7 @@ public interface MessageBroker {
             Objects.requireNonNull(this.connection, "connection");
             Objects.requireNonNull(this.logger, "logger");
             Objects.requireNonNull(this.requestTimeout, "requestTimeout");
-            return new MessageBrokerImpl(this.appId, this.serverId, this.tags, this.connection, this.logger, this.requestTimeout);
+            return new MessageBrokerImpl(this.appId, this.serverId, this.tags, this.connection, this.logger, this.requestTimeout, this.typeIdStrategy);
         }
     }
 }
