@@ -277,7 +277,7 @@ broker.publishTwoWay(new PlayerCountRequest("world"), "survival-2", Duration.ofS
 | `NoSubscriberException` | 目标服务器没有订阅，通常是不在线。立即失败。 |
 | `java.util.concurrent.TimeoutException` | 没有在规定时间内收到响应。对端不会被取消，迟到的响应被忽略。 |
 | `RemoteMessageException` | `handleRequest()` 抛出异常或它的 Future 失败。带有异常类名和消息文本，完整堆栈记录在处理端的日志里。 |
-| `IllegalStateException` | Redis 未连接，或等待期间 broker 退订了。 |
+| `IllegalStateException` | 等待期间 broker 退订了。 |
 
 `handleRequest()` 的 Future 以 `null` 完成时不发送响应，调用方会等到超时。
 

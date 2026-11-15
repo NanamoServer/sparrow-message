@@ -277,7 +277,7 @@ broker.publishTwoWay(new PlayerCountRequest("world"), "survival-2", Duration.ofS
 | `NoSubscriberException` | The target server is not subscribed, usually because it is offline. Fails at once. |
 | `java.util.concurrent.TimeoutException` | No response arrived in time. The remote side is not cancelled and a late response is ignored. |
 | `RemoteMessageException` | `handleRequest()` threw or its future failed. Carries the exception class name and message; the full stack trace is logged on the handling server. |
-| `IllegalStateException` | Redis is not connected, or the broker unsubscribed while waiting. |
+| `IllegalStateException` | The broker unsubscribed while waiting. |
 
 A `handleRequest()` future that completes with `null` sends no response, and the caller runs into its timeout.
 

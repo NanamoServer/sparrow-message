@@ -1,7 +1,6 @@
 package net.momirealms.sparrow.message;
 
 import io.netty.buffer.ByteBuf;
-import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import net.momirealms.sparrow.message.connection.RedisConnection;
@@ -119,9 +118,6 @@ final class MessageBrokerImpl implements MessageBroker {
                 channel = this.serverChannel(target.value());
             }
         }
-        if (!this.connection.isOpen()) {
-            return CompletableFuture.failedFuture(new IllegalStateException("Redis is not connected"));
-        }
         byte[] payload = this.encode(message, MessageHeader.ONE_WAY, tag, excludedSource, 0L);
         CompletableFuture<Long> result = new CompletableFuture<>();
         this.connection.publish(channel, payload).whenComplete((receivers, error) -> {
@@ -145,18 +141,22 @@ final class MessageBrokerImpl implements MessageBroker {
     @SuppressWarnings("unchecked")
     public <R extends TwoWayResponseMessage> CompletableFuture<R> publishTwoWay(@NotNull TwoWayRequestMessage<R> request, @NotNull String serverId, @NotNull Duration timeout) {
         boolean local = serverId.equals(this.serverId) && request.shortCircuitLocally();
-        if (!local && !this.connection.isOpen()) {
-            return CompletableFuture.failedFuture(new IllegalStateException("Redis is not connected"));
-        }
-        // 登记等待记录. 无论以响应, 超时, 取消还是失败结束, 都在 Future 完成时清掉
-        CompletableFuture<R> result = new CompletableFuture<>();
+        // 编码放在登记之前, 编码失败时不会留下等待记录
         long correlationId = this.nextCorrelationId.getAndIncrement();
+        byte[] payload = local ? null : this.encode(request, MessageHeader.REQUEST, null, this.serverId, correlationId);
+        // 登记等待记录并从现在开始计时
+        CompletableFuture<R> result = new CompletableFuture<>();
         this.pending.put(correlationId, (CompletableFuture<TwoWayResponseMessage>) result);
-        result.whenComplete((response, error) -> this.pending.remove(correlationId));
-        // 从现在开始计时. 到点的任务直接跑在虚拟线程上, 借用的是 JDK 自己的延时线程
-        CompletableFuture.delayedExecutor(timeout.toNanos(), TimeUnit.NANOSECONDS, MessageExecutors.VIRTUAL).execute(() -> {
-            if (result.isDone()) return;
-            result.completeExceptionally(new TimeoutException("Request " + request.identifier() + " to " + serverId + " timed out after " + timeout.toMillis() + " ms"));
+        MessageIdentifier identifier = request.identifier();
+        ScheduledFuture<?> timer = TIMEOUT_TIMER.schedule(
+                () -> this.fail(result, new TimeoutException("Request " + identifier + " to " + serverId + " timed out after " + timeout.toMillis() + " ms")),
+                timeout.toNanos(),
+                TimeUnit.NANOSECONDS
+        );
+        // 无论以响应, 超时, 取消还是失败结束, 都在 Future 完成时清掉等待记录并撤掉计时任务
+        result.whenComplete((response, error) -> {
+            this.pending.remove(correlationId);
+            timer.cancel(false);
         });
         // 发给本服的请求不经过 Redis, 直接交给它的执行器
         if (local) {
@@ -171,7 +171,6 @@ final class MessageBrokerImpl implements MessageBroker {
             }));
             return result;
         }
-        byte[] payload = this.encode(request, MessageHeader.REQUEST, null, this.serverId, correlationId);
         this.connection.publish(this.serverChannel(serverId), payload).whenComplete((receivers, error) -> {
             if (error != null) {
                 this.fail(result, error);
@@ -185,32 +184,25 @@ final class MessageBrokerImpl implements MessageBroker {
 
     private byte[] encode(RedisMessage message, int kind, @Nullable String tag, @Nullable String source, long correlationId) {
         RegisteredRedisMessage<RedisMessage> registered = this.registry.byId(message.identifier());
-        ByteBuf buffer = ByteBufAllocator.DEFAULT.buffer(HEADER_ESTIMATE + message.estimateSize());
-        try {
-            switch (kind) {
-                case MessageHeader.ONE_WAY -> MessageHeader.writeOneWay(buffer, registered.id(), tag, source);
-                case MessageHeader.REQUEST -> MessageHeader.writeRequest(buffer, registered.id(), source, correlationId);
-                case MessageHeader.RESPONSE -> MessageHeader.writeResponse(buffer, registered.id(), correlationId);
-            }
-            registered.codec().encode(message, buffer);
-            return ByteBufUtil.getBytes(buffer);
-        } finally {
-            buffer.release();
+        // 用不走内存池的堆缓冲区, 发布常常发生在一次性的虚拟线程上
+        ByteBuf buffer = Unpooled.buffer(HEADER_ESTIMATE + message.estimateSize());
+        switch (kind) {
+            case MessageHeader.ONE_WAY -> MessageHeader.writeOneWay(buffer, registered.id(), tag, source);
+            case MessageHeader.REQUEST -> MessageHeader.writeRequest(buffer, registered.id(), source, correlationId);
+            case MessageHeader.RESPONSE -> MessageHeader.writeResponse(buffer, registered.id(), correlationId);
         }
+        registered.codec().encode(message, buffer);
+        return ByteBufUtil.getBytes(buffer, 0, buffer.writerIndex(), false);
     }
 
     private byte[] encodeError(long correlationId, Throwable cause) {
         String text = cause.getMessage() == null ? "" : cause.getMessage();
         if (text.length() > MAX_ERROR_TEXT_LENGTH) text = text.substring(0, MAX_ERROR_TEXT_LENGTH);
-        ByteBuf buffer = ByteBufAllocator.DEFAULT.buffer(HEADER_ESTIMATE + text.length());
-        try {
-            MessageHeader.writeError(buffer, correlationId);
-            ByteBufHelper.writeUtf8(buffer, cause.getClass().getName());
-            ByteBufHelper.writeUtf8(buffer, text);
-            return ByteBufUtil.getBytes(buffer);
-        } finally {
-            buffer.release();
-        }
+        ByteBuf buffer = Unpooled.buffer(HEADER_ESTIMATE + text.length());
+        MessageHeader.writeError(buffer, correlationId);
+        ByteBufHelper.writeUtf8(buffer, cause.getClass().getName());
+        ByteBufHelper.writeUtf8(buffer, text);
+        return ByteBufUtil.getBytes(buffer, 0, buffer.writerIndex(), false);
     }
 
     // 订阅频道收到消息时的入口, 运行在 Redis 客户端的 I/O 线程上.

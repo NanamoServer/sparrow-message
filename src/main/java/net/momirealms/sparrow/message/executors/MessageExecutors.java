@@ -29,28 +29,31 @@ public final class MessageExecutors {
         @Override
         public void execute(@NotNull Runnable task) {
             synchronized (this.pending) {
-                // 前面还有任务没跑完, 排队等它结束后接力
-                if (this.running) {
-                    this.pending.addLast(task);
-                    return;
-                }
+                this.pending.addLast(task);
+                // 已经有一条线程在取任务, 它会顺着队列跑到这一个
+                if (this.running) return;
                 this.running = true;
             }
-            VIRTUAL.execute(() -> this.run(task));
+            VIRTUAL.execute(this::drain);
         }
 
-        private void run(Runnable task) {
-            try {
-                task.run();
-            } finally {
-                // 任务抛异常也要接着跑下一个, 异常本身照常交给线程的未捕获异常处理
-                Runnable next;
+        // 一条虚拟线程把队列里的任务按顺序跑完, 队列空了就退出, 下次提交再开新的.
+        private void drain() {
+            while (true) {
+                Runnable task;
                 synchronized (this.pending) {
-                    next = this.pending.pollFirst();
-                    if (next == null) this.running = false;
+                    task = this.pending.pollFirst();
+                    if (task == null) {
+                        this.running = false;
+                        return;
+                    }
                 }
-                if (next != null) {
-                    VIRTUAL.execute(() -> this.run(next));
+                try {
+                    task.run();
+                } catch (Throwable error) {
+                    // 任务抛异常也要接着跑下一个, 异常照常交给线程的未捕获异常处理器
+                    Thread thread = Thread.currentThread();
+                    thread.getUncaughtExceptionHandler().uncaughtException(thread, error);
                 }
             }
         }

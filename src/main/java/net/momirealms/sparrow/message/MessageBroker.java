@@ -41,7 +41,7 @@ public interface MessageBroker {
      * 向指定目标发送一条单向消息.
      * <p>返回的 Future 在 Redis 确认发布后完成, 不等待对端处理. 接收数量为 0 也算成功.
      * 目标是本服且消息允许本地短路时, 消息直接交给本地处理, Future 立即以 1 完成.
-     * Redis 未连接或发布失败时 Future 以异常完成.
+     * 发布失败时 Future 以异常完成. Redis 断线期间的发布由客户端排队, 重连后发出.
      *
      * @param message 要发送的消息, <strong>必须已经注册</strong>
      * @param target 发送目标
@@ -103,7 +103,7 @@ public interface MessageBroker {
      *   <li>TimeoutException: 从调用开始算, 超过 timeout 仍没有响应. 对端不会被取消, 迟到的响应被忽略.</li>
      *   <li>NoSubscriberException: 目标服务器没有订阅, 通常是不在线.</li>
      *   <li>RemoteMessageException: 对端的 {@code handleRequest()} 失败了.</li>
-     *   <li>IllegalStateException: Redis 未连接, 或等待期间本 broker 退订了.</li>
+     *   <li>IllegalStateException: 等待期间本 broker 退订了.</li>
      * </ul>
      * 目标是本服且请求允许本地短路时, 请求直接交给本地处理, 上面的超时和失败规则不变.
      *
