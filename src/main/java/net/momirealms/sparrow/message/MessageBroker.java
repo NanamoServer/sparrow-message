@@ -2,9 +2,13 @@ package net.momirealms.sparrow.message;
 
 import net.momirealms.sparrow.message.connection.RedisConnection;
 import net.momirealms.sparrow.message.message.OneWayMessage;
+import net.momirealms.sparrow.message.message.TwoWayRequestMessage;
+import net.momirealms.sparrow.message.message.TwoWayResponseMessage;
 import net.momirealms.sparrow.message.registry.RedisMessageRegistry;
 import org.jetbrains.annotations.NotNull;
 
+import java.time.Duration;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 
@@ -28,6 +32,9 @@ public interface MessageBroker {
      */
     void subscribe();
 
+    /**
+     * 退订两个频道. 还在等待响应的双向请求立即以 {@link IllegalStateException} 失败.
+     */
     void unsubscribe();
 
     /**
@@ -77,6 +84,38 @@ public interface MessageBroker {
         return this.publish(message, Target.others());
     }
 
+    /**
+     * 向指定服务器发送一个请求并等待响应, 超时时间用创建 broker 时设置的默认值.
+     *
+     * @param request 要发送的请求
+     * @param serverId 目标服务器 ID
+     * @param <R> 响应类型
+     * @return 对端给出的响应
+     * @see #publishTwoWay(TwoWayRequestMessage, String, Duration)
+     */
+    @NotNull
+    <R extends TwoWayResponseMessage> CompletableFuture<R> publishTwoWay(@NotNull TwoWayRequestMessage<R> request, @NotNull String serverId);
+
+    /**
+     * 向指定服务器发送一个请求并等待响应.
+     * <p>返回的 Future 以下列异常之一失败:
+     * <ul>
+     *   <li>TimeoutException: 从调用开始算, 超过 timeout 仍没有响应. 对端不会被取消, 迟到的响应被忽略.</li>
+     *   <li>NoSubscriberException: 目标服务器没有订阅, 通常是不在线.</li>
+     *   <li>RemoteMessageException: 对端的 {@code handleRequest()} 失败了.</li>
+     *   <li>IllegalStateException: Redis 未连接, 或等待期间本 broker 退订了.</li>
+     * </ul>
+     * 目标是本服且请求允许本地短路时, 请求直接交给本地处理, 上面的超时和失败规则不变.
+     *
+     * @param request 要发送的请求, <strong>请求和它的响应类型都必须已经注册</strong>
+     * @param serverId 目标服务器 ID
+     * @param timeout 这次请求的超时时间
+     * @param <R> 响应类型
+     * @return 对端给出的响应
+     */
+    @NotNull
+    <R extends TwoWayResponseMessage> CompletableFuture<R> publishTwoWay(@NotNull TwoWayRequestMessage<R> request, @NotNull String serverId, @NotNull Duration timeout);
+
     @NotNull
     static Builder builder() {
         return new Builder();
@@ -88,6 +127,7 @@ public interface MessageBroker {
         private Set<String> tags = Set.of();
         private RedisConnection connection;
         private Logger logger;
+        private Duration requestTimeout = Duration.ofSeconds(10);
 
         private Builder() {}
 
@@ -141,9 +181,28 @@ public interface MessageBroker {
             return this;
         }
 
+        /**
+         * 设置双向请求的默认超时时间, 不设置时为 10 秒.
+         * 单次请求可以在 publishTwoWay 上另行指定.
+         *
+         * @param requestTimeout 默认超时时间
+         * @return 此构建器
+         */
+        @NotNull
+        public Builder requestTimeout(@NotNull Duration requestTimeout) {
+            this.requestTimeout = requestTimeout;
+            return this;
+        }
+
         @NotNull
         public MessageBroker build() {
-            return new MessageBrokerImpl(this.appId, this.serverId, this.tags, this.connection, this.logger);
+            Objects.requireNonNull(this.appId, "appId");
+            Objects.requireNonNull(this.serverId, "serverId");
+            Objects.requireNonNull(this.tags, "tags");
+            Objects.requireNonNull(this.connection, "connection");
+            Objects.requireNonNull(this.logger, "logger");
+            Objects.requireNonNull(this.requestTimeout, "requestTimeout");
+            return new MessageBrokerImpl(this.appId, this.serverId, this.tags, this.connection, this.logger, this.requestTimeout);
         }
     }
 }
