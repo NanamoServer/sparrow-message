@@ -1,9 +1,10 @@
 plugins {
     id("java-library")
+    id("maven-publish")
 }
 
 group = "net.momirealms"
-version = "1.0.0-SNAPSHOT"
+version = "26.11"
 
 repositories {
     mavenCentral()
@@ -23,4 +24,29 @@ dependencies {
 
 tasks.withType<JavaCompile>().configureEach {
     options.encoding = "UTF-8"
+}
+
+publishing {
+    publications {
+        create<MavenPublication>("maven") {
+            artifactId = "sparrow-message"
+            from(components["java"])
+            version = project.version.toString()
+            pom {
+                name = "Sparrow Message"
+                url = "https://github.com/NanamoServer/sparrow-message"
+            }
+        }
+    }
+
+    repositories {
+        maven {
+            name = "XiaoMoMi"
+            url = uri("https://repo.momirealms.net/releases")
+            credentials(PasswordCredentials::class)
+            authentication {
+                create<BasicAuthentication>("basic")
+            }
+        }
+    }
 }
