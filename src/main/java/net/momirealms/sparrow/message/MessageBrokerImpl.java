@@ -23,14 +23,23 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
 
 final class MessageBrokerImpl implements MessageBroker {
-    private static final int HEADER_ESTIMATE = 32;          // 给消息头预留的缓冲区字节数
-    private static final int MAX_ERROR_TEXT_LENGTH = 32767; // 错误响应里异常消息文本的最大字符数, 超出的部分截掉
+    // 给消息头预留的缓冲区字节数
+    private static final int HEADER_ESTIMATE = 32;
+    // 错误响应里异常消息文本的最大字符数, 超出的部分截掉
+    private static final int MAX_ERROR_TEXT_LENGTH = 32767;
+    // 所有 broker 共用的请求超时计时器. 它只负责到点触发, 让 Future 失败的动作仍然换到虚拟线程上做
+    private static final ScheduledExecutorService TIMEOUT_TIMER = new ScheduledThreadPoolExecutor(1, Thread.ofPlatform().name("sparrow-message-timeout").daemon(true).factory()) {{
+        this.setRemoveOnCancelPolicy(true);
+    }};
 
     private final String appId;
     private final String serverId;
