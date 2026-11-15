@@ -1,0 +1,7 @@
+[versions]
+lettuce = "7.7.0.RELEASE"
+jetbrains-annotations = "26.0.2-1"
+
+[libraries]
+lettuce-core = { module = "io.lettuce:lettuce-core", version.ref = "lettuce" }
+jetbrains-annotations = { module = "org.jetbrains:annotations", version.ref = "jetbrains-annotations" }

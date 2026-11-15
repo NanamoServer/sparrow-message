@@ -1,20 +1,26 @@
 plugins {
-    id("java")
+    id("java-library")
 }
 
-group = "top.catnies"
-version = "1.0-SNAPSHOT"
+group = "net.momirealms"
+version = "1.0.0-SNAPSHOT"
 
 repositories {
     mavenCentral()
 }
 
-dependencies {
-    testImplementation(platform("org.junit:junit-bom:6.0.0"))
-    testImplementation("org.junit.jupiter:junit-jupiter")
-    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
 }
 
-tasks.test {
-    useJUnitPlatform()
+dependencies {
+    // Netty 由 Lettuce 传递进入编译类路径, 运行时由使用方的平台提供.
+    compileOnly(libs.lettuce.core)
+    compileOnly(libs.jetbrains.annotations)
+}
+
+tasks.withType<JavaCompile>().configureEach {
+    options.encoding = "UTF-8"
 }
